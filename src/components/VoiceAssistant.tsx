@@ -124,14 +124,13 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
+      let greetingSent = false;
       dc.onopen = () => {
-        // Arne soll sofort die Begrüßung sprechen
+        if (greetingSent) return;
+        greetingSent = true;
+        // Einfacher Trigger - Arne folgt seinem System-Prompt für die Begrüßung
         dc.send(JSON.stringify({
-          type: "response.create",
-          response: {
-            modalities: ["text", "audio"],
-            instructions: "Begrüße den Anrufer jetzt mit genau diesem Satz: \"Hausverwaltung Wiesenstraße, Arne am Apparat. Was kann ich für Sie tun?\""
-          }
+          type: "response.create"
         }));
       };
 
