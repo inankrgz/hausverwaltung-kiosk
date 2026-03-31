@@ -17,6 +17,7 @@ import {
   GEMEINSCHAFTSBEREICH_OPTIONS,
 } from "@/lib/types";
 import { submitTicket, generateTicketId } from "@/lib/api";
+import { findMatchingStoerung, type Stoerung } from "@/lib/stoerungen";
 
 interface TicketFormProps {
   onClose: () => void;
@@ -26,6 +27,7 @@ export default function TicketForm({ onClose }: TicketFormProps) {
   const [step, setStep] = useState<"form" | "success">("form");
   const [submitting, setSubmitting] = useState(false);
   const [ticketId, setTicketId] = useState("");
+  const [matchedStoerung, setMatchedStoerung] = useState<Stoerung | null>(null);
 
   const [vorname, setVorname] = useState("");
   const [nachname, setNachname] = useState("");
@@ -71,8 +73,24 @@ export default function TicketForm({ onClose }: TicketFormProps) {
     return Object.keys(newErrors).length === 0;
   };
 
+  // Störungsabgleich bei Kategorie/Hausnummer/Beschreibungs-Änderung
+  const checkStoerung = () => {
+    if (kategorie && hausnummer && beschreibung.trim()) {
+      const match = findMatchingStoerung(beschreibung, kategorie as Kategorie, hausnummer as Hausnummer);
+      setMatchedStoerung(match);
+    } else {
+      setMatchedStoerung(null);
+    }
+  };
+
   const handleSubmit = async () => {
     if (!validate()) return;
+
+    // Störung nochmal prüfen
+    if (kategorie && hausnummer) {
+      const match = findMatchingStoerung(beschreibung, kategorie as Kategorie, hausnummer as Hausnummer);
+      setMatchedStoerung(match);
+    }
 
     setSubmitting(true);
     const id = generateTicketId();
@@ -487,6 +505,7 @@ export default function TicketForm({ onClose }: TicketFormProps) {
             <textarea
               value={beschreibung}
               onChange={(e) => setBeschreibung(e.target.value)}
+              onBlur={checkStoerung}
               placeholder="Bitte beschreiben Sie Ihr Anliegen möglichst genau..."
               rows={4}
               className={`${inputClass("beschreibung")} resize-none`}
@@ -539,6 +558,36 @@ export default function TicketForm({ onClose }: TicketFormProps) {
               className={inputClass("rueckrufnummer")}
             />
           </div>
+
+          {/* Störungshinweis */}
+          <AnimatePresence>
+            {matchedStoerung && (
+              <motion.div
+                className="rounded-2xl bg-amber-500/10 border border-amber-400/30 p-5"
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+              >
+                <div className="flex items-start gap-3">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-400 mt-0.5 shrink-0">
+                    <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                    <line x1="12" x2="12" y1="9" y2="13" /><line x1="12" x2="12.01" y1="17" y2="17" />
+                  </svg>
+                  <div>
+                    <p className="text-amber-300 text-sm font-semibold mb-1">
+                      Bekannte Störung: {matchedStoerung.titel}
+                    </p>
+                    <p className="text-white/50 text-sm">
+                      {matchedStoerung.beschreibung}
+                    </p>
+                    <p className="text-white/40 text-xs mt-2">
+                      Sie können Ihr Ticket trotzdem absenden, damit wir wissen, dass Sie betroffen sind.
+                    </p>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* Submit */}
           <motion.button

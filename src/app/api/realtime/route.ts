@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ARNE_SYSTEM_PROMPT } from "@/lib/prompts";
+import { getStoerungPromptBlock } from "@/lib/stoerungen";
 
 export async function POST() {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -23,7 +24,7 @@ export async function POST() {
         body: JSON.stringify({
           model: "gpt-4o-realtime-preview-2024-12-17",
           voice: "ash",
-          instructions: ARNE_SYSTEM_PROMPT,
+          instructions: ARNE_SYSTEM_PROMPT + getStoerungPromptBlock(),
           input_audio_transcription: {
             model: "whisper-1",
           },
