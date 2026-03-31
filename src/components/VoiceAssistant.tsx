@@ -29,7 +29,6 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
   const onCloseRef = useRef(onClose);
   const mountedRef = useRef(true);
   const transcriptRef = useRef<string[]>([]);
-  const goodbyeDetectedRef = useRef(false);
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -50,7 +49,6 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
     pcRef.current = null;
     dcRef.current = null;
     streamRef.current = null;
-    goodbyeDetectedRef.current = false;
   }
 
   function showSuccessScreen() {
@@ -73,16 +71,14 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
     }, 5 * 60 * 1000);
   }
 
-  function checkForGoodbye(text: string) {
+  function checkForFinalGoodbye(text: string): boolean {
     const lower = text.toLowerCase();
-    const goodbyePhrases = [
-      "auf wiedersehen",
-      "auf wiederhören",
-      "einen schönen tag noch",
-      "sie können jetzt auflegen",
-      "können jetzt auflegen",
-    ];
-    return goodbyePhrases.some((phrase) => lower.includes(phrase));
+    // Nur die ECHTE Abschlussformel erkennen:
+    // Arne muss "auflegen" UND ("auf wiedersehen" ODER "auf wiederhören") im selben Text sagen.
+    // Das ist die finale Verabschiedung laut Prompt, nicht ein beiläufiges "Auf Wiedersehen".
+    const hasAuflegen = lower.includes("auflegen");
+    const hasGoodbye = lower.includes("auf wiedersehen") || lower.includes("auf wiederhören");
+    return hasAuflegen && hasGoodbye;
   }
 
   async function connect() {
@@ -147,24 +143,30 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
             resetInactivityTimeout();
           }
 
-          // Arne's Antwort-Transkript erfassen + Goodbye merken
+          // Arne's Antwort-Transkript erfassen
           if (event.type === "response.audio_transcript.done" && event.transcript) {
             transcriptRef.current.push(`Arne: ${event.transcript}`);
-            if (checkForGoodbye(event.transcript)) {
-              goodbyeDetectedRef.current = true;
-            }
           }
 
-          // response.done = Arne hat KOMPLETT zu Ende gesprochen
-          // Erst jetzt den Erfolgsscreen zeigen, wenn Goodbye erkannt wurde
-          if (event.type === "response.done" && goodbyeDetectedRef.current) {
-            // Warte bis Audio wirklich fertig abgespielt ist
-            if (goodbyeTimerRef.current) clearTimeout(goodbyeTimerRef.current);
-            goodbyeTimerRef.current = setTimeout(() => {
-              if (mountedRef.current) {
-                showSuccessScreen();
-              }
-            }, 2000);
+          // response.done = Arne hat eine komplette Antwort zu Ende gesprochen.
+          // Jetzt prüfen wir das GESAMTE Transkript dieser Antwort auf die finale Verabschiedung.
+          // Nur wenn Arne "auflegen" UND "Auf Wiedersehen" zusammen sagt, ist das Gespräch wirklich vorbei.
+          if (event.type === "response.done" && event.response?.output) {
+            const fullResponseText = event.response.output
+              .filter((item: { type: string }) => item.type === "message")
+              .flatMap((item: { content?: Array<{ transcript?: string }> }) => item.content || [])
+              .map((c: { transcript?: string }) => c.transcript || "")
+              .join(" ");
+
+            if (fullResponseText && checkForFinalGoodbye(fullResponseText)) {
+              // Arne hat sich final verabschiedet - warte bis Audio fertig, dann Erfolgsscreen
+              if (goodbyeTimerRef.current) clearTimeout(goodbyeTimerRef.current);
+              goodbyeTimerRef.current = setTimeout(() => {
+                if (mountedRef.current) {
+                  showSuccessScreen();
+                }
+              }, 3000);
+            }
           }
 
           // Nutzer-Transkript erfassen
