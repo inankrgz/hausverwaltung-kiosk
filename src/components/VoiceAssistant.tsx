@@ -25,9 +25,11 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
   const dcRef = useRef<RTCDataChannel | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoCloseRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const goodbyeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onCloseRef = useRef(onClose);
   const mountedRef = useRef(true);
   const transcriptRef = useRef<string[]>([]);
+  const goodbyeDetectedRef = useRef(false);
 
   useEffect(() => {
     onCloseRef.current = onClose;
@@ -35,6 +37,7 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
 
   function cleanup() {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    if (goodbyeTimerRef.current) clearTimeout(goodbyeTimerRef.current);
     if (dcRef.current) {
       try { dcRef.current.close(); } catch { /* ignore */ }
     }
@@ -47,6 +50,7 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
     pcRef.current = null;
     dcRef.current = null;
     streamRef.current = null;
+    goodbyeDetectedRef.current = false;
   }
 
   function showSuccessScreen() {
@@ -56,10 +60,10 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
     setTranscript([...transcriptRef.current]);
     setView("success");
 
-    // Auto-redirect nach 15 Sekunden
+    // Auto-redirect nach 5 Sekunden
     autoCloseRef.current = setTimeout(() => {
       onCloseRef.current();
-    }, 15000);
+    }, 5000);
   }
 
   function resetInactivityTimeout() {
@@ -120,6 +124,17 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
+      dc.onopen = () => {
+        // Arne soll sofort die Begrüßung sprechen
+        dc.send(JSON.stringify({
+          type: "response.create",
+          response: {
+            modalities: ["text", "audio"],
+            instructions: "Begrüße den Anrufer jetzt mit genau diesem Satz: \"Hausverwaltung Wiesenstraße, Arne am Apparat. Was kann ich für Sie tun?\""
+          }
+        }));
+      };
+
       dc.onmessage = (e) => {
         try {
           const event = JSON.parse(e.data);
@@ -127,24 +142,30 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
           if (event.type === "response.audio.delta") {
             setIsSpeaking(true);
             resetInactivityTimeout();
-          } else if (event.type === "response.audio.done" || event.type === "response.done") {
+          } else if (event.type === "response.audio.done") {
             setIsSpeaking(false);
           } else if (event.type === "input_audio_buffer.speech_started") {
             resetInactivityTimeout();
           }
 
-          // Arne's Antwort-Transkript erfassen
+          // Arne's Antwort-Transkript erfassen + Goodbye merken
           if (event.type === "response.audio_transcript.done" && event.transcript) {
             transcriptRef.current.push(`Arne: ${event.transcript}`);
-            // Prüfe ob Arne sich verabschiedet hat
             if (checkForGoodbye(event.transcript)) {
-              // Kurz warten bis Arne fertig gesprochen hat, dann Erfolgsscreen
-              setTimeout(() => {
-                if (mountedRef.current) {
-                  showSuccessScreen();
-                }
-              }, 3000);
+              goodbyeDetectedRef.current = true;
             }
+          }
+
+          // response.done = Arne hat KOMPLETT zu Ende gesprochen
+          // Erst jetzt den Erfolgsscreen zeigen, wenn Goodbye erkannt wurde
+          if (event.type === "response.done" && goodbyeDetectedRef.current) {
+            // Warte bis Audio wirklich fertig abgespielt ist
+            if (goodbyeTimerRef.current) clearTimeout(goodbyeTimerRef.current);
+            goodbyeTimerRef.current = setTimeout(() => {
+              if (mountedRef.current) {
+                showSuccessScreen();
+              }
+            }, 2000);
           }
 
           // Nutzer-Transkript erfassen
@@ -306,7 +327,7 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
           </motion.button>
 
           <p className="text-white/30 text-sm mt-4">
-            Automatische Weiterleitung in wenigen Sekunden...
+            Automatische Weiterleitung in 5 Sekunden...
           </p>
         </motion.div>
       </motion.div>
