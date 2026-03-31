@@ -3,8 +3,10 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import BackButton from "./BackButton";
+import { generateTicketId } from "@/lib/api";
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";
+type ViewState = "call" | "success";
 
 interface VoiceAssistantProps {
   onClose: () => void;
@@ -14,15 +16,19 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [view, setView] = useState<ViewState>("call");
+  const [ticketId, setTicketId] = useState("");
+  const [transcript, setTranscript] = useState<string[]>([]);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoCloseRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onCloseRef = useRef(onClose);
   const mountedRef = useRef(true);
+  const transcriptRef = useRef<string[]>([]);
 
-  // Keep onClose ref current without triggering re-renders
   useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
@@ -43,20 +49,44 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
     streamRef.current = null;
   }
 
+  function showSuccessScreen() {
+    cleanup();
+    const id = generateTicketId();
+    setTicketId(id);
+    setTranscript([...transcriptRef.current]);
+    setView("success");
+
+    // Auto-redirect nach 15 Sekunden
+    autoCloseRef.current = setTimeout(() => {
+      onCloseRef.current();
+    }, 15000);
+  }
+
   function resetInactivityTimeout() {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(() => {
-      cleanup();
-      onCloseRef.current();
+      showSuccessScreen();
     }, 5 * 60 * 1000);
+  }
+
+  function checkForGoodbye(text: string) {
+    const lower = text.toLowerCase();
+    const goodbyePhrases = [
+      "auf wiedersehen",
+      "auf wiederhören",
+      "einen schönen tag noch",
+      "sie können jetzt auflegen",
+      "können jetzt auflegen",
+    ];
+    return goodbyePhrases.some((phrase) => lower.includes(phrase));
   }
 
   async function connect() {
     setStatus("connecting");
     setErrorMessage("");
+    transcriptRef.current = [];
 
     try {
-      // 1. Get ephemeral token from our API
       const tokenRes = await fetch("/api/realtime", { method: "POST" });
       if (!mountedRef.current) return;
       if (!tokenRes.ok) {
@@ -68,19 +98,16 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
         throw new Error("Kein Session-Token erhalten");
       }
 
-      // 2. Create peer connection
       const pc = new RTCPeerConnection();
       if (!mountedRef.current) { pc.close(); return; }
       pcRef.current = pc;
 
-      // 3. Set up audio playback
       const audioEl = document.createElement("audio");
       audioEl.autoplay = true;
       pc.ontrack = (e) => {
         audioEl.srcObject = e.streams[0];
       };
 
-      // 4. Get microphone
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (!mountedRef.current) {
         stream.getTracks().forEach((t) => t.stop());
@@ -90,13 +117,13 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
       streamRef.current = stream;
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-      // 5. Set up data channel for events
       const dc = pc.createDataChannel("oai-events");
       dcRef.current = dc;
 
       dc.onmessage = (e) => {
         try {
           const event = JSON.parse(e.data);
+
           if (event.type === "response.audio.delta") {
             setIsSpeaking(true);
             resetInactivityTimeout();
@@ -105,17 +132,34 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
           } else if (event.type === "input_audio_buffer.speech_started") {
             resetInactivityTimeout();
           }
+
+          // Arne's Antwort-Transkript erfassen
+          if (event.type === "response.audio_transcript.done" && event.transcript) {
+            transcriptRef.current.push(`Arne: ${event.transcript}`);
+            // Prüfe ob Arne sich verabschiedet hat
+            if (checkForGoodbye(event.transcript)) {
+              // Kurz warten bis Arne fertig gesprochen hat, dann Erfolgsscreen
+              setTimeout(() => {
+                if (mountedRef.current) {
+                  showSuccessScreen();
+                }
+              }, 3000);
+            }
+          }
+
+          // Nutzer-Transkript erfassen
+          if (event.type === "conversation.item.input_audio_transcription.completed" && event.transcript) {
+            transcriptRef.current.push(`Mieter: ${event.transcript}`);
+          }
         } catch {
           // ignore parse errors
         }
       };
 
-      // 6. Create and set local SDP offer
       const offer = await pc.createOffer();
       if (!mountedRef.current) { pc.close(); return; }
       await pc.setLocalDescription(offer);
 
-      // 7. Send offer to OpenAI Realtime
       const sdpRes = await fetch(
         "https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17",
         {
@@ -150,26 +194,124 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
     }
   }
 
-  // Connect once on mount, cleanup on unmount
   useEffect(() => {
     mountedRef.current = true;
     connect();
     return () => {
       mountedRef.current = false;
       cleanup();
+      if (autoCloseRef.current) clearTimeout(autoCloseRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleClose = () => {
+    if (autoCloseRef.current) clearTimeout(autoCloseRef.current);
     cleanup();
     onClose();
+  };
+
+  const handleEndCall = () => {
+    showSuccessScreen();
   };
 
   const handleRetry = () => {
     cleanup();
     connect();
   };
+
+  // Erfolgsscreen nach Gesprächsende
+  if (view === "success") {
+    return (
+      <motion.div
+        className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-gradient-to-br from-slate-950 via-emerald-950 to-slate-950"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+      >
+        <motion.div
+          className="text-center max-w-lg px-6"
+          initial={{ scale: 0.8, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ delay: 0.2, type: "spring", stiffness: 200 }}
+        >
+          {/* Checkmark */}
+          <div className="w-24 h-24 mx-auto mb-6 rounded-full bg-emerald-500/30 border-2 border-emerald-400/50 flex items-center justify-center">
+            <motion.svg
+              width="48"
+              height="48"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="text-emerald-400"
+              initial={{ pathLength: 0, opacity: 0 }}
+              animate={{ pathLength: 1, opacity: 1 }}
+              transition={{ delay: 0.4, duration: 0.5 }}
+            >
+              <polyline points="20 6 9 17 4 12" />
+            </motion.svg>
+          </div>
+
+          <h2 className="text-3xl font-bold text-white mb-3">
+            Anliegen aufgenommen
+          </h2>
+
+          <p className="text-white/60 text-lg mb-2">
+            Ihre Ticket-Nummer:
+          </p>
+          <p className="text-emerald-400 font-mono font-bold text-2xl mb-4">
+            {ticketId}
+          </p>
+
+          <div className="bg-white/5 rounded-2xl border border-white/10 p-5 mb-6 text-left">
+            <p className="text-white/70 text-sm leading-relaxed">
+              Ihr Anliegen wurde erfolgreich erfasst. Die Hausverwaltung wird sich
+              innerhalb der nächsten Tage bei Ihnen melden. Bitte notieren Sie sich
+              die Ticket-Nummer für Rückfragen.
+            </p>
+          </div>
+
+          {transcript.length > 0 && (
+            <details className="mb-6 text-left">
+              <summary className="text-white/40 text-sm cursor-pointer hover:text-white/60 transition-colors">
+                Gesprächsprotokoll anzeigen
+              </summary>
+              <div className="mt-3 bg-white/5 rounded-xl border border-white/10 p-4 max-h-48 overflow-y-auto">
+                {transcript.map((line, i) => (
+                  <p
+                    key={i}
+                    className={`text-sm mb-1.5 ${
+                      line.startsWith("Arne:")
+                        ? "text-teal-400/80"
+                        : "text-white/50"
+                    }`}
+                  >
+                    {line}
+                  </p>
+                ))}
+              </div>
+            </details>
+          )}
+
+          <motion.button
+            onClick={handleClose}
+            className="px-8 py-3.5 rounded-xl bg-white/10 hover:bg-white/20 text-white
+              backdrop-blur-md border border-white/20 transition-colors text-base font-medium"
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+          >
+            Zurück zum Startbildschirm
+          </motion.button>
+
+          <p className="text-white/30 text-sm mt-4">
+            Automatische Weiterleitung in wenigen Sekunden...
+          </p>
+        </motion.div>
+      </motion.div>
+    );
+  }
 
   return (
     <AnimatePresence>
@@ -181,7 +323,6 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
       >
         <BackButton onClick={handleClose} label="Beenden" />
 
-        {/* Status text */}
         <div className="mb-8 text-center">
           <h2 className="text-2xl font-semibold text-white mb-2">
             Sprachassistent Arne
@@ -197,7 +338,6 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
           </p>
         </div>
 
-        {/* Animated pulse */}
         <div className="relative flex items-center justify-center mb-12">
           {status === "connected" && (
             <>
@@ -286,9 +426,8 @@ export default function VoiceAssistant({ onClose }: VoiceAssistantProps) {
           </div>
         </div>
 
-        {/* End call button */}
         <motion.button
-          onClick={handleClose}
+          onClick={handleEndCall}
           className="px-10 py-4 rounded-2xl bg-red-500/80 hover:bg-red-500 text-white text-lg
             font-semibold backdrop-blur-md border border-red-400/30 transition-colors"
           whileHover={{ scale: 1.05 }}
