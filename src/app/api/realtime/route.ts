@@ -1,6 +1,21 @@
 import { NextResponse } from "next/server";
 import { ARNE_SYSTEM_PROMPT } from "@/lib/prompts";
-import { getStoerungPromptBlock } from "@/lib/stoerungen";
+import { supabase } from "@/lib/supabase";
+
+function buildStoerungBlock(stoerungen: { titel: string; beschreibung: string; hausnummer: string }[]): string {
+  if (stoerungen.length === 0) return "";
+
+  let block = `\n\nAKTUELL BEKANNTE STÖRUNGEN - Wenn ein Anrufer eines dieser Probleme meldet, informiere ihn PROAKTIV:\n`;
+  for (const s of stoerungen) {
+    const haus =
+      s.hausnummer === "beide"
+        ? "beide Häuser"
+        : `Wiesenstraße ${s.hausnummer === "59" ? "neunundfünfzig" : "vierundsechzig"}`;
+    block += `- ${s.titel} (${haus}): "${s.beschreibung}" - Sage dem Anrufer: "Das ist uns bereits bekannt. ${s.beschreibung}" Nimm das Anliegen trotzdem auf, aber informiere den Mieter, dass die Hausverwaltung schon dran ist.\n`;
+  }
+  block += `Wenn der Anrufer ein Problem meldet, das einer dieser Störungen entspricht, informiere ihn BEVOR du alle Details abfragst. Nimm das Ticket trotzdem auf.\n`;
+  return block;
+}
 
 export async function POST() {
   const apiKey = process.env.OPENAI_API_KEY;
@@ -10,6 +25,20 @@ export async function POST() {
       { error: "OPENAI_API_KEY is not configured" },
       { status: 500 }
     );
+  }
+
+  // Aktive Störungen aus DB laden
+  let stoerungBlock = "";
+  try {
+    const { data } = await supabase
+      .from("stoerungen")
+      .select("titel, beschreibung, hausnummer")
+      .in("status", ["aktiv", "in_bearbeitung"]);
+    if (data && data.length > 0) {
+      stoerungBlock = buildStoerungBlock(data);
+    }
+  } catch {
+    // Fallback: ohne Störungen weitermachen
   }
 
   try {
@@ -24,7 +53,7 @@ export async function POST() {
         body: JSON.stringify({
           model: "gpt-4o-realtime-preview-2024-12-17",
           voice: "ash",
-          instructions: ARNE_SYSTEM_PROMPT + getStoerungPromptBlock(),
+          instructions: ARNE_SYSTEM_PROMPT + stoerungBlock,
           input_audio_transcription: {
             model: "whisper-1",
           },

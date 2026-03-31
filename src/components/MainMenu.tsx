@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { QRCodeSVG } from "qrcode.react";
-import { getAktiveStoerungen } from "@/lib/stoerungen";
+import { fetchAktiveStoerungen } from "@/lib/api";
 import type { Stoerung } from "@/lib/stoerungen";
 
 interface MainMenuProps {
@@ -61,7 +61,11 @@ function TimeDisplay() {
 
 export default function MainMenu({ onVoice, onTicket, onQR }: MainMenuProps) {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-  const stoerungen = getAktiveStoerungen();
+  const [stoerungen, setStoerungen] = useState<Stoerung[]>([]);
+
+  useEffect(() => {
+    fetchAktiveStoerungen().then(setStoerungen).catch(() => {});
+  }, []);
 
   return (
     <div className="min-h-screen flex flex-col bg-gradient-to-br from-slate-950 via-blue-950 to-slate-950 relative overflow-hidden">
